@@ -1,0 +1,16 @@
+*.mp4
+*.avi
+*.pt
+*.onnx
+*.zip
+video/
+model/
+config/
+outputs/
+hauling_output/
+hauling_km18_output_*/
+*.conf
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
