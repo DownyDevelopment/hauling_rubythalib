@@ -1,3 +1,4 @@
+# data & model (besar / internal)
 *.mp4
 *.avi
 *.pt
@@ -6,11 +7,18 @@
 video/
 model/
 config/
+*.conf
+.env
+
+# hasil run
 outputs/
 hauling_output/
 hauling_km18_output_*/
-*.conf
-.env
+
+# python
 __pycache__/
 .pytest_cache/
 *.pyc
+*.egg-info/
+build/
+dist/

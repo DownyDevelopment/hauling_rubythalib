@@ -39,7 +39,8 @@ class RunOptions:
     output_dir: Path
     plate_model: Optional[Path] = None
     config_section: Optional[str] = None
-    save_video: bool = True
+    save_video: bool = True                    # --render: annotated.mp4
+    save_report: bool = True                   # --report: tracks_report.csv (+ foto per track)
     conf: Optional[float] = None
     iou: Optional[float] = None
     imgsz: Optional[int] = None
@@ -289,7 +290,7 @@ def run(opt: RunOptions) -> RunSummary:
                 if not type_err_logged:
                     summary.warnings.append(f"vehicle type error (frame {frame_index}): {e}"[:300])
                     type_err_logged = True
-            if opt.save_track_cards:
+            if opt.save_report and opt.save_track_cards:
                 for d in in_main:
                     x1, y1, x2, y2 = (int(round(v)) for v in d.bbox_xyxy)
                     a = (x2 - x1) * (y2 - y1)
@@ -361,14 +362,15 @@ def run(opt: RunOptions) -> RunSummary:
 
     # ---------- Laporan per ID kendaraan ----------
     rows = build_track_rows(manager, event_ids, summary.total_frames_read, fps, plate_enabled=plate_det is not None)
-    tracks_path = out_dir / "tracks_report.csv"
-    write_tracks_csv(tracks_path, rows)
-    summary.outputs["tracks_report"] = str(tracks_path)
+    if opt.save_report:
+        tracks_path = out_dir / "tracks_report.csv"
+        write_tracks_csv(tracks_path, rows)
+        summary.outputs["tracks_report"] = str(tracks_path)
     relevant = [r for r in rows if r["frames_in_main"] != "0"]
     summary.vehicle_types = count_by(relevant, "vehicle_type")
     summary.tracks_by_status = count_by(rows, "status_kendaraan")
     summary.lambung_by_status = count_by([r for r in rows if r["reached_final_s"]], "lambung_status")
-    if opt.save_track_cards and cards:
+    if opt.save_report and opt.save_track_cards and cards:
         card_dir = out_dir / "tracks"
         card_dir.mkdir(exist_ok=True)
         by_id = {r["track_id"]: r for r in rows}

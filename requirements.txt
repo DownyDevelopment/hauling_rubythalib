@@ -1,0 +1,11 @@
+# Runtime
+ultralytics>=8.1.0      # YOLO detector + ByteTrack (ikut memasang torch, opencv-python, numpy, PyYAML)
+lap>=0.5.12             # dibutuhkan ByteTrack; dipasang di awal agar Ultralytics tidak meng-install saat run
+opencv-python>=4.8
+numpy>=1.23
+PyYAML>=6.0             # config .yaml/.yml
+
+# Development / testing
+pytest>=7.0
+
+# Sistem (opsional): ffmpeg untuk konversi annotated.mp4 ke H.264 (sudah ada di Colab)

@@ -259,7 +259,8 @@ def draw_preview(frame: np.ndarray, config: dict, tracks: Optional[Dict[int, Seq
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Generate config area KM-18 otomatis dari lintasan kendaraan")
+    p = argparse.ArgumentParser(prog="main.py auto-area",
+                                description="Generate config area KM-18 otomatis dari lintasan kendaraan")
     p.add_argument("--video", required=True, type=Path)
     p.add_argument("--vehicle-model", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path, help="path file config output (.json)")

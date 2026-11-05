@@ -1,12 +1,14 @@
-"""Entry point CLI.
+"""Parser argumen & orkestrasi CLI. Dijalankan lewat main.py di root repo (entry point utama).
 
 Contoh:
-    python -m hauling_offline.cli \
-        --video data/km18_sample.mp4 \
-        --vehicle-model models/vehicle.pt \
-        --plate-model models/plate.pt \
-        --config config/km18.json \
-        --output-dir outputs/run1
+    python main.py --video video/km18_sample.mp4 --vehicle-model model/vehicle.pt \
+        --plate-model model/plate.pt --config config/km18.conf --output-dir outputs/run_01 --render --report
+
+    python main.py auto-area --video video/km18_sample.mp4 --vehicle-model model/vehicle.pt --out config/km18_auto.json
+
+Output default : events.csv + run_summary.json
+--render       : + annotated.mp4
+--report       : + tracks_report.csv + foto per track (tracks/track_<id>.jpg)
 """
 from __future__ import annotations
 
@@ -20,7 +22,9 @@ from .pipeline import PipelineError, RunOptions, run
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Pipeline inference hauling offline (KM-18)")
+    p = argparse.ArgumentParser(
+        prog="main.py",
+        description="Pipeline inference hauling offline (KM-18). Subcommand lain: 'main.py auto-area --help'.")
     p.add_argument("--video", required=True, type=Path, help="path video input")
     p.add_argument("--vehicle-model", required=True, type=Path, help="path model vehicle (.pt/.onnx)")
     p.add_argument("--config", required=True, type=Path, help="path config KM-18 (.json/.yaml/.ini/.env)")
@@ -28,8 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plate-model", "--lambung-model", dest="plate_model", type=Path, default=None,
                    help="path model nomor lambung (kolom CSV plate_*), opsional")
     p.add_argument("--config-section", default=None, help="section/kamera di config bila berisi banyak kamera")
-    p.add_argument("--save-video", action=argparse.BooleanOptionalAction, default=True,
-                   help="simpan annotated.mp4 (default: ya; --no-save-video untuk mematikan)")
+    out = p.add_argument_group("output tambahan (default: hanya events.csv + run_summary.json)")
+    out.add_argument("--render", "--save-video", dest="render", action=argparse.BooleanOptionalAction,
+                     default=False, help="simpan video anotasi annotated.mp4 (--save-video = alias lama)")
+    out.add_argument("--report", action=argparse.BooleanOptionalAction, default=False,
+                     help="simpan laporan per ID tracks_report.csv + foto per track di tracks/")
     p.add_argument("--conf", type=float, default=None, help="override confidence vehicle")
     p.add_argument("--iou", type=float, default=None, help="override IoU NMS vehicle")
     p.add_argument("--imgsz", type=int, default=None, help="override ukuran input vehicle")
@@ -67,8 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type-every", type=int, default=1, help="jalankan model COCO tiap N frame")
     p.add_argument("--type-size-threshold", type=float, default=0.31,
                    help="rule ukuran: lebar bbox / lebar main area >= nilai ini -> Truck")
-    p.add_argument("--no-track-cards", dest="track_cards", action="store_false",
-                   help="jangan simpan foto per track_id (tracks/track_<id>.jpg)")
+    out.add_argument("--no-track-cards", dest="track_cards", action="store_false",
+                     help="bersama --report: tulis tracks_report.csv saja, tanpa foto per track")
     p.add_argument("--device", default=None, help="cpu / 0 / cuda:0")
     p.add_argument("--track-buffer-sec", type=float, default=2.0, help="toleransi occlusion tracker (detik)")
     p.add_argument("--down-direction", default="South", choices=["South", "North"],
@@ -80,12 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "auto-area":            # Task 1 otomatis: generate config area dari video
+        from .auto_area import main as auto_area_main
+        return auto_area_main(argv[1:])
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     opt = RunOptions(
         video=args.video, vehicle_model=args.vehicle_model, config=args.config, output_dir=args.output_dir,
-        plate_model=args.plate_model, config_section=args.config_section, save_video=args.save_video,
+        plate_model=args.plate_model, config_section=args.config_section, save_video=args.render, save_report=args.report,
         conf=args.conf, iou=args.iou, imgsz=args.imgsz, max_det=args.max_det, plate_conf=args.plate_conf,
         plate_imgsz=args.plate_imgsz, plate_every=args.plate_every, device=args.device,
         plate_region=tuple(float(v) for v in args.plate_region.split(",")), plate_merge=args.plate_merge,
@@ -103,6 +114,9 @@ def main(argv=None) -> int:
     except PipelineError as e:
         print(f"[ERROR] {e}", file=sys.stderr)
         return 2
+    print("\n=== OUTPUT ===")
+    for k, v in s.outputs.items():
+        print(f"{k:>16}: {v}")
     print("\n=== RUN SUMMARY ===")
     print(json.dumps({k: getattr(s, k) for k in (
         "video_name", "fps", "video_resolution", "total_frames_read", "total_detections", "unique_tracks",

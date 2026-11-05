@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hauling-offline"
+version = "0.3.0"
+description = "Pipeline inference hauling offline KM-18: deteksi kendaraan, speed, violation overspeed, nomor lambung"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "ultralytics>=8.1.0",
+    "lap>=0.5.12",
+    "opencv-python>=4.8",
+    "numpy>=1.23",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+hauling = "hauling_offline.cli:main"
+
+[tool.setuptools]
+packages = ["hauling_offline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
