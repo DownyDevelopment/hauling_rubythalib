@@ -1,11 +1,16 @@
 # Runtime
-ultralytics>=8.1.0      # YOLO detector + ByteTrack (ikut memasang torch, opencv-python, numpy, PyYAML)
+ultralytics>=8.3.0      # YOLO detector + ByteTrack/BoT-SORT (ikut memasang torch, opencv-python, numpy, PyYAML)
 lap>=0.5.12             # dibutuhkan ByteTrack; dipasang di awal agar Ultralytics tidak meng-install saat run
 opencv-python>=4.8
 numpy>=1.23
 PyYAML>=6.0             # config .yaml/.yml
 
+# R&D tracking
+deep-sort-realtime>=1.3.2   # tracker DeepSORT (--tracker deepsort)
+# tensorrt                 # hanya untuk GPU NVIDIA: pip install tensorrt  (main.py export-engine)
+
 # Development / testing
 pytest>=7.0
 
-# Sistem (opsional): ffmpeg untuk konversi annotated.mp4 ke H.264 (sudah ada di Colab)
+# PyTorch versi CUDA (GPU NVIDIA) dipasang TERPISAH sebelum file ini, lihat docs/DOKUMENTASI.md bagian Setup lokal.
+# Sistem (opsional): ffmpeg untuk konversi video ke H.264.

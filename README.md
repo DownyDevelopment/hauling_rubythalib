@@ -6,7 +6,7 @@ Tanpa database / RTSP / API / notifikasi.
 
 ## Instalasi
 ```bash
-pip install -r requirements.txt        # atau: pip install -e ".[dev]"
+pip install -r requirements.txt        # PyTorch versi CUDA dipasang dulu; lihat docs: Setup lokal
 ```
 
 ## Menjalankan
@@ -26,7 +26,13 @@ python main.py --video video/km18_sample.mp4 \
 | `--render` | `annotated.mp4` |
 | `--report` | `tracks_report.csv` + foto per track `tracks/track_<id>.jpg` |
 
-Area otomatis (bila kalibrasi resmi belum ada): `python main.py auto-area --help`.
+Tracker: `--tracker bytetrack|botsort|botsort-reid|deepsort` (default bytetrack). Detector TensorRT: `.engine` di `--vehicle-model`.
+
+Subcommand:
+- `python main.py auto-area --help`: area otomatis bila kalibrasi resmi belum ada
+- `python main.py export-engine --help`: export detector ke TensorRT
+- `python main.py benchmark-tracker --help`: bandingkan tracker + video preview grid
+
 Semua argumen: `python main.py --help`.
 
 ## Testing
@@ -35,5 +41,6 @@ python -m pytest -q
 ```
 
 ## Dokumentasi
-Penjelasan per task (Setup Area, Deteksi Kendaraan, Logic Speed, Nomor Lambung, Violation Overspeed), format output,
+Setup lokal Windows, penjelasan per task (Setup Area, Deteksi Kendaraan, Logic Speed, Nomor Lambung, Violation
+Overspeed, R&D Tracking), format output,
 dan riwayat perubahan: **[docs/DOKUMENTASI.md](docs/DOKUMENTASI.md)**.

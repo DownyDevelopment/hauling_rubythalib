@@ -3,6 +3,8 @@
 *.avi
 *.pt
 *.onnx
+*.engine
+*.engine.hauling.json
 *.zip
 video/
 model/
@@ -16,6 +18,8 @@ hauling_output/
 hauling_km18_output_*/
 
 # python
+.venv/
+venv/
 __pycache__/
 .pytest_cache/
 *.pyc

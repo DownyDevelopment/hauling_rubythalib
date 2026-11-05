@@ -13,6 +13,7 @@ Output default : events.csv + run_summary.json
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import logging
 import sys
@@ -21,10 +22,18 @@ from pathlib import Path
 from .pipeline import PipelineError, RunOptions, run
 
 
+SUBCOMMANDS = {
+    "auto-area": "auto_area",            # Task 1 otomatis: generate config area dari video
+    "export-engine": "export_engine",    # R&D: export detector ke TensorRT (.engine)
+    "benchmark-tracker": "benchmark",    # R&D: bandingkan tracker + video preview 2x2
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="main.py",
-        description="Pipeline inference hauling offline (KM-18). Subcommand lain: 'main.py auto-area --help'.")
+        description="Pipeline inference hauling offline (KM-18). Subcommand: auto-area, export-engine, "
+                    "benchmark-tracker (tambahkan --help untuk detail).")
     p.add_argument("--video", required=True, type=Path, help="path video input")
     p.add_argument("--vehicle-model", required=True, type=Path, help="path model vehicle (.pt/.onnx)")
     p.add_argument("--config", required=True, type=Path, help="path config KM-18 (.json/.yaml/.ini/.env)")
@@ -77,6 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--no-track-cards", dest="track_cards", action="store_false",
                      help="bersama --report: tulis tracks_report.csv saja, tanpa foto per track")
     p.add_argument("--device", default=None, help="cpu / 0 / cuda:0")
+    p.add_argument("--tracker", default="bytetrack", choices=["bytetrack", "botsort", "botsort-reid", "deepsort"],
+                   help="algoritma tracking (default bytetrack); detector TensorRT: berikan file .engine ke "
+                        "--vehicle-model")
     p.add_argument("--track-buffer-sec", type=float, default=2.0, help="toleransi occlusion tracker (detik)")
     p.add_argument("--down-direction", default="South", choices=["South", "North"],
                    help="arah yang dianggap 'turun' di frame (y bertambah)")
@@ -88,9 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "auto-area":            # Task 1 otomatis: generate config area dari video
-        from .auto_area import main as auto_area_main
-        return auto_area_main(argv[1:])
+    if argv and argv[0] in SUBCOMMANDS:
+        module = importlib.import_module(f".{SUBCOMMANDS[argv[0]]}", __package__ or "hauling_offline")
+        return module.main(argv[1:])
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -103,7 +115,7 @@ def main(argv=None) -> int:
         vehicle_classes=[int(v) for v in args.vehicle_classes.split(",")] if args.vehicle_classes else None,
         plate_grace_sec=args.plate_grace_sec, lambung_format=args.lambung_format or None,
         ocr_model_dir=args.ocr_model_dir, ocr_block_order=args.ocr_block_order, ocr_max_reads=args.ocr_max_reads,
-        track_buffer_sec=args.track_buffer_sec, down_direction=args.down_direction,
+        track_buffer_sec=args.track_buffer_sec, tracker=args.tracker, down_direction=args.down_direction,
         max_frames=args.max_frames, h264=args.h264, plate_zone=args.plate_zone,
         main_mode=args.main_mode, main_min_coverage=args.main_min_coverage,
         vehicle_type_method=args.vehicle_type, type_model=args.type_model, type_every=args.type_every,
@@ -120,6 +132,7 @@ def main(argv=None) -> int:
     print("\n=== RUN SUMMARY ===")
     print(json.dumps({k: getattr(s, k) for k in (
         "video_name", "fps", "video_resolution", "total_frames_read", "total_detections", "unique_tracks",
+        "tracker", "processing_fps",
         "csv_events", "speed_valid", "overspeed", "violation_counts", "plate_detected", "lambung_text_read", "tracks_lost_before_final",
         "vehicle_types", "tracks_by_status", "lambung_by_status", "processing_seconds")}, indent=2))
     tr = s.outputs.get("tracks_report")

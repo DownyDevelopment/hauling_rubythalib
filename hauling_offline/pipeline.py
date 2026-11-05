@@ -68,6 +68,7 @@ class RunOptions:
     save_track_cards: bool = True              # simpan foto per track_id (tracks/track_<id>.jpg)
     device: Optional[str] = None
     track_buffer_sec: float = 2.0
+    tracker: str = "bytetrack"                 # bytetrack / botsort / botsort-reid / deepsort
     down_direction: str = "South"
     max_frames: Optional[int] = None
     h264: bool = True
@@ -95,6 +96,8 @@ class RunSummary:
     speed_status_counts: dict = field(default_factory=dict)
     violation_counts: dict = field(default_factory=lambda: {"OVERSPEED": 0, "NORMAL": 0, "NOT_EVALUATED": 0})
     processing_seconds: float = 0.0
+    processing_fps: float = 0.0                # frame / detik untuk seluruh pipeline (termasuk render)
+    tracker: dict = field(default_factory=dict)   # nama tracker, backend detector, waktu per frame, memori GPU
     config: dict = field(default_factory=dict)
     models: dict = field(default_factory=dict)
     outputs: dict = field(default_factory=dict)
@@ -108,6 +111,26 @@ def _check_inputs(opt: RunOptions) -> None:
             raise PipelineError(f"File {label} tidak ditemukan: {p}")
     if opt.plate_model is not None and not Path(opt.plate_model).is_file():
         raise PipelineError(f"File plate model tidak ditemukan: {opt.plate_model}")
+
+
+def _gpu_reset_peak() -> None:
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:  # noqa: BLE001 - metrik opsional
+        pass
+
+
+def _gpu_peak_mb() -> Optional[float]:
+    """Puncak memori GPU yang dialokasikan PyTorch (MB). Memori milik engine TensorRT tidak terhitung di sini."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return round(torch.cuda.max_memory_allocated() / 2**20, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _to_h264(src: Path) -> Optional[str]:
@@ -168,7 +191,7 @@ def run(opt: RunOptions) -> RunSummary:
         from .detector import VehicleTracker
         tracker = VehicleTracker(str(opt.vehicle_model), conf=conf, iou=iou, imgsz=imgsz, max_det=max_det,
                                  device=opt.device, track_buffer_frames=track_buffer,
-                                 classes=opt.vehicle_classes)
+                                 classes=opt.vehicle_classes, tracker=opt.tracker)
     except Exception as e:
         cap.release()
         raise PipelineError(f"Model vehicle gagal dimuat ({opt.vehicle_model}): {e}") from e
@@ -176,6 +199,9 @@ def run(opt: RunOptions) -> RunSummary:
                                  "imgsz": tracker.imgsz, "max_det": max_det, "classes": tracker.classes,
                                  "single_cls": bool(tracker.train_args.get("single_cls")),
                                  "track_buffer_frames": track_buffer}
+    summary.tracker = {"name": opt.tracker, "detector_backend": tracker.backend,
+                       "track_buffer_frames": track_buffer, "config": tracker.tracker_cfg}
+    _gpu_reset_peak()
 
     # ---------- Task 4: plate detector (opsional, gagal != stop) ----------
     plate_det = None
@@ -394,6 +420,10 @@ def run(opt: RunOptions) -> RunSummary:
             summary.outputs["annotated_video"] = str(video_path)
 
     summary.processing_seconds = round(time.perf_counter() - t0, 2)
+    if summary.processing_seconds > 0:
+        summary.processing_fps = round(summary.total_frames_read / summary.processing_seconds, 2)
+    summary.tracker.update(tracker.timing.summary())
+    summary.tracker["gpu_peak_mem_mb"] = _gpu_peak_mb()
     summary_path = out_dir / "run_summary.json"
     summary.outputs["run_summary"] = str(summary_path)
     summary_path.write_text(json.dumps(asdict(summary), indent=2, ensure_ascii=False), encoding="utf-8")

@@ -8,9 +8,10 @@ video ──> Task 2: deteksi + tracking ──> Task 1: cek area ──> Task 3
                                     Task 4: nomor lambung (zona final) ──> events.csv (+ video, laporan)
 ```
 
-Isi dokumen: [Struktur repo](#struktur-repo) · [Instalasi](#instalasi) · [Menjalankan](#menjalankan) ·
+Isi dokumen: [Struktur repo](#struktur-repo) · [Instalasi](#instalasi) · [Setup lokal](#setup-lokal-windows) · [Menjalankan](#menjalankan) ·
 [Task 1](#task-1--setup-area) · [Task 2](#task-2--deteksi-kendaraan) · [Task 3](#task-3--logic-speed-detection) ·
-[Task 4](#task-4--deteksi-nomor-lambung) · [Task 5](#task-5--violation-overspeed) · [Output](#output) ·
+[Task 4](#task-4--deteksi-nomor-lambung) · [Task 5](#task-5--violation-overspeed) ·
+[R&D Tracking](#rd-tracking) · [Output](#output) ·
 [Testing](#testing) · [Riwayat perubahan](#riwayat-perubahan)
 
 ---
@@ -27,7 +28,8 @@ hauling_rubythalib/
 │   ├── config.py            # Task 1  - baca config KM-18
 │   ├── geometry.py          # Task 1  - polygon, skala, cek titik/crossing
 │   ├── auto_area.py         # Task 1  - generate area otomatis dari lintasan (opsional)
-│   ├── detector.py          # Task 2  - YOLO + ByteTrack
+│   ├── detector.py          # Task 2  - YOLO (.pt / TensorRT .engine) + tracker
+│   ├── trackers.py          # Task 2  - pilihan tracker (ByteTrack/BoT-SORT/DeepSORT) + pengukur waktu
 │   ├── vehicle_type.py      # Task 2  - Truck vs Light Vehicle
 │   ├── speed.py             # Task 3  - rumus & status speed
 │   ├── tracks.py            # Task 3  - state machine per track_id
@@ -37,6 +39,8 @@ hauling_rubythalib/
 │   ├── csv_writer.py        # output  - events.csv
 │   ├── report.py            # output  - tracks_report.csv (--report)
 │   ├── renderer.py          # output  - annotated.mp4 & foto per track (--render / --report)
+│   ├── export_engine.py     # R&D     - export detector ke TensorRT (main.py export-engine)
+│   ├── benchmark.py         # R&D     - bandingkan tracker + video grid (main.py benchmark-tracker)
 │   ├── pipeline.py          # orkestrasi seluruh task
 │   └── cli.py               # parser argumen yang dipanggil main.py
 └── tests/                   # unit test (pytest)
@@ -55,6 +59,27 @@ pip install -e ".[dev]"
 ```
 
 `ffmpeg` opsional, dipakai untuk mengubah `annotated.mp4` ke H.264 agar bisa diputar di browser. Di Colab sudah tersedia.
+
+## Setup lokal (Windows)
+
+Dijalankan dari folder repo di IDE (Antigravity / VS Code), terminal PowerShell.
+
+1. **Python 3.11 atau 3.12** (paling aman untuk PyTorch, `lap`, dan TensorRT). Cek: `py -0`.
+2. **Virtual environment di LUAR folder OneDrive**, karena PyTorch berukuran beberapa GB dan tidak perlu ikut tersinkron:
+   ```powershell
+   py -3.11 -m venv C:\venvs\hauling
+   C:\venvs\hauling\Scripts\Activate.ps1
+   python -m pip install --upgrade pip
+   ```
+   Kalau aktivasi diblokir: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, lalu ulangi.
+3. **PyTorch**. Cek GPU dengan `nvidia-smi`.
+   - Ada GPU NVIDIA: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126`
+   - Tidak ada GPU NVIDIA: `pip install torch torchvision` (CPU; jauh lebih lambat, pakai `--max-frames`)
+4. **Dependency proyek**: `pip install -r requirements.txt`
+5. **TensorRT** (hanya GPU NVIDIA): `pip install tensorrt`
+6. **Cek**: `python -m pytest -q` lalu `python -c "import torch; print(torch.cuda.is_available())"`
+
+Taruh data di folder repo: `video/`, `model/`, `config/`. Ketiganya, beserta `outputs/`, sudah masuk `.gitignore`.
 
 ## Menjalankan
 
@@ -77,6 +102,8 @@ python main.py \
 | `--render` | `annotated.mp4` (video anotasi area, bbox, speed, label OVERSPEED, nomor lambung) |
 | `--report` | `tracks_report.csv` dan foto per track di `tracks/track_<id>.jpg` |
 | `--report --no-track-cards` | `tracks_report.csv` saja, tanpa foto |
+
+Pilihan tracker: `--tracker bytetrack` (default), `botsort`, `botsort-reid`, `deepsort`. Detector TensorRT: berikan file `.engine` ke `--vehicle-model`. Lihat [R&D Tracking](#rd-tracking).
 
 `--save-video` / `--no-save-video` masih diterima sebagai alias lama dari `--render` / `--no-render`.
 
@@ -208,12 +235,73 @@ speed_kmh   = (distance_area_speed / (t_finish - t_start)) × 3.6     # dibulatk
 
 ---
 
+## R&D Tracking
+
+**Tujuan.** Menguji alasan pemakaian ByteTrack dan membandingkannya dengan DeepSORT, BoT-SORT, serta detector yang dipercepat TensorRT, pada video dan config KM-18 yang sama.
+
+**Modul.** `trackers.py`, `detector.py`, `export_engine.py`, `benchmark.py`.
+
+| Pilihan | Implementasi | Ide utama |
+| --- | --- | --- |
+| `bytetrack` | Ultralytics | Kalman + IoU; deteksi confidence rendah ikut dipakai di asosiasi tahap kedua |
+| `botsort` | Ultralytics | ByteTrack + kompensasi gerak kamera (GMC) + Kalman yang diperbaiki, tanpa ReID |
+| `botsort-reid` | Ultralytics | BoT-SORT + fitur tampilan ReID (`model: auto` = fitur dari detector) |
+| `deepsort` | `deep-sort-realtime` | Kalman + IoU + fitur tampilan dari embedder MobileNet; asosiasi satu tahap |
+| detector `.engine` | TensorRT | Bukan tracker: mempercepat inference model deteksi; bisa dipasangkan dengan tracker mana pun |
+
+Semua tracker menghasilkan `track_id` dengan format yang sama, jadi Task 1, 3, 4, dan 5 tidak berubah apa pun tracker-nya. Toleransi occlusion (`--track-buffer-sec`) diterapkan sama: `track_buffer` untuk ByteTrack/BoT-SORT dan `max_age` untuk DeepSORT.
+
+**1. Export detector ke TensorRT** (GPU NVIDIA):
+
+```bash
+python main.py export-engine --model model/Hauling_Vehicle_yolov8m_SingleCls_V11.pt --half
+```
+
+Hasilnya `model/Hauling_Vehicle_yolov8m_SingleCls_V11.engine` beserta `*.engine.hauling.json` (imgsz dan `single_cls` dari checkpoint asli, karena file engine tidak menyimpannya). Engine terikat ke GPU dan versi TensorRT, jadi harus di-export ulang di setiap mesin.
+
+**2. Benchmark**:
+
+```bash
+python main.py benchmark-tracker --video video/km18_sample.mp4 \
+  --vehicle-model model/Hauling_Vehicle_yolov8m_SingleCls_V11.pt --config config/_track_km18_01_V2.conf \
+  --trackers bytetrack botsort deepsort --engine model/Hauling_Vehicle_yolov8m_SingleCls_V11.engine \
+  --true-vehicles 12 --max-frames 1800 --device 0 --output-dir outputs/benchmark_01
+```
+
+Semua varian memakai video, detector, config, dan parameter yang sama. Model nomor lambung tidak dijalankan supaya waktu yang terukur murni deteksi dan tracking. Satu varian yang gagal (misalnya TensorRT belum terpasang) hanya ditandai `gagal`; varian lain tetap berjalan.
+
+**Output benchmark.**
+
+| File | Isi |
+| --- | --- |
+| `benchmark_results.csv` / `.json` | Metrik per varian |
+| `benchmark_results.md` | Tabel ringkas untuk laporan |
+| `comparison_grid.mp4` | Video preview semua varian berdampingan, dengan label ms/frame dan jumlah ID |
+| `<varian>/` | Output pipeline per varian (`events.csv`, `tracks_report.csv`, `annotated.mp4`, `run_summary.json`) |
+
+**Metrik.** Belum ada ground truth anotasi tracking, jadi stabilitas ID diukur dengan metrik proxy.
+
+| Metrik | Arti |
+| --- | --- |
+| `total_ms_mean`, `total_ms_p95`, `fps_detect_track` | Waktu deteksi + tracking per frame. 10 frame pertama (pemanasan) tidak dihitung |
+| `detect_ms_mean`, `track_ms_mean` | Pemisahan waktu model deteksi dan waktu tracker |
+| `gpu_peak_mem_mb` | Puncak memori GPU milik PyTorch (memori engine TensorRT tidak terhitung) |
+| `relevant_tracks` | Jumlah `track_id` yang pernah masuk main area; idealnya sama dengan jumlah kendaraan sebenarnya |
+| `fragmentation_ratio` | `relevant_tracks / --true-vehicles`; 1,00 ideal, lebih dari 1 berarti ID pecah atau berganti |
+| `not_crossed_start` | Event yang track-nya muncul setelah garis start, indikasi ID baru di tengah jalan |
+| `gagal_finish` | Track masuk main area tetapi hilang sebelum final, indikasi track putus |
+| `csv_events`, `speed_valid` | Dampak langsung ke output pipeline |
+
+`--true-vehicles` diisi dari hitungan manual jumlah kendaraan yang melintas di main area pada rentang frame yang sama.
+
+---
+
 ## Output
 
 | File | Kapan dibuat | Isi |
 | --- | --- | --- |
 | `events.csv` | selalu | 1 baris per kendaraan yang mencapai final area (24 kolom) |
-| `run_summary.json` | selalu | Ringkasan run: frame, deteksi, track, speed valid, `overspeed`, `violation_counts`, warning, error |
+| `run_summary.json` | selalu | Ringkasan run: frame, deteksi, track, speed valid, `overspeed`, `violation_counts`, tracker + waktu per frame, warning, error |
 | `annotated.mp4` | `--render` | Video anotasi |
 | `tracks_report.csv` | `--report` | Semua track, termasuk yang tidak mencapai final, beserta alasannya |
 | `tracks/track_<id>.jpg` | `--report` | Foto kendaraan per track dengan ringkasan statusnya |
@@ -243,7 +331,7 @@ Nilai yang belum tersedia ditulis kosong (bukan `0`, `None`, atau `nan`). Boolea
 ## Testing
 
 ```bash
-python -m pytest -q        # 71 test
+python -m pytest -q        # 84 test
 ```
 
 | File | Cakupan |
@@ -251,6 +339,7 @@ python -m pytest -q        # 71 test
 | `tests/test_units.py` | Config, geometri, state machine, speed, nomor lambung, CSV, laporan per ID |
 | `tests/test_violation.py` | Aturan overspeed (tepat 60, di atas/bawah batas, status tidak valid), penandaan di speed final, satu violation per track |
 | `tests/test_cli.py` | `main.py` sebagai entry point, flag `--render`/`--report`, alias lama, subcommand `auto-area` |
+| `tests/test_tracking_rnd.py` | Config tracker, metadata TensorRT, pengukur waktu, adapter DeepSORT, flag `--tracker`, benchmark dan video grid |
 
 Test tidak membutuhkan model maupun video, sehingga bisa dijalankan di mana saja.
 
@@ -258,6 +347,7 @@ Test tidak membutuhkan model maupun video, sehingga bisa dijalankan di mana saja
 
 | Versi | Perubahan |
 | --- | --- |
+| 0.4.0 | R&D tracking: `--tracker` (bytetrack/botsort/botsort-reid/deepsort), detector TensorRT `.engine`, `main.py export-engine`, `main.py benchmark-tracker` (metrik + video grid), waktu per frame di `run_summary.json`; setup lokal Windows |
 | 0.3.0 | `main.py` sebagai entry point; flag `--render` dan `--report` (default: hanya `events.csv` + `run_summary.json`); subcommand `main.py auto-area`; `requirements.txt` dan `pyproject.toml`; dokumentasi per task ini |
 | 0.2.0 | Task 5 violation overspeed: `violation.py`, kolom `violation_status`/`violation_reason`, `violation_counts` di summary, label OVERSPEED di video |
 | 0.1.0 | Task 1–4: setup area, deteksi + tracking kendaraan, logic speed, deteksi dan OCR nomor lambung, laporan per ID, jenis kendaraan |
