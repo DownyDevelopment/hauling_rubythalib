@@ -94,7 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="arah yang dianggap 'turun' di frame (y bertambah)")
     p.add_argument("--max-frames", type=int, default=None, help="batasi jumlah frame (debug)")
     p.add_argument("--no-h264", dest="h264", action="store_false", help="jangan konversi video ke H.264")
-    p.add_argument("--log-level", default="INFO")
+    p.add_argument("--log-level", default="INFO", help="level log di konsol (run.log selalu lengkap)")
+    p.add_argument("--frame-log-every", type=int, default=1,
+                   help="tulis baris waktu per tahap ke run.log setiap N frame (0 = mati); "
+                        "timing_per_frame.csv tetap lengkap")
+    p.add_argument("--no-log-file", dest="log_file", action="store_false",
+                   help="jangan simpan run.log di folder output")
     return p
 
 
@@ -104,8 +109,10 @@ def main(argv=None) -> int:
         module = importlib.import_module(f".{SUBCOMMANDS[argv[0]]}", __package__ or "hauling_offline")
         return module.main(argv[1:])
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO),
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    level = getattr(logging, args.log_level.upper(), logging.INFO)
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    for h in logging.getLogger().handlers:
+        h.setLevel(level)
     opt = RunOptions(
         video=args.video, vehicle_model=args.vehicle_model, config=args.config, output_dir=args.output_dir,
         plate_model=args.plate_model, config_section=args.config_section, save_video=args.render, save_report=args.report,
@@ -115,7 +122,8 @@ def main(argv=None) -> int:
         vehicle_classes=[int(v) for v in args.vehicle_classes.split(",")] if args.vehicle_classes else None,
         plate_grace_sec=args.plate_grace_sec, lambung_format=args.lambung_format or None,
         ocr_model_dir=args.ocr_model_dir, ocr_block_order=args.ocr_block_order, ocr_max_reads=args.ocr_max_reads,
-        track_buffer_sec=args.track_buffer_sec, tracker=args.tracker, down_direction=args.down_direction,
+        track_buffer_sec=args.track_buffer_sec, tracker=args.tracker,
+        frame_log_every=args.frame_log_every, log_file=args.log_file, down_direction=args.down_direction,
         max_frames=args.max_frames, h264=args.h264, plate_zone=args.plate_zone,
         main_mode=args.main_mode, main_min_coverage=args.main_min_coverage,
         vehicle_type_method=args.vehicle_type, type_model=args.type_model, type_every=args.type_every,

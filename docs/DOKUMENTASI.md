@@ -11,7 +11,7 @@ video ──> Task 2: deteksi + tracking ──> Task 1: cek area ──> Task 3
 Isi dokumen: [Struktur repo](#struktur-repo) · [Instalasi](#instalasi) · [Setup lokal](#setup-lokal-windows) · [Menjalankan](#menjalankan) ·
 [Task 1](#task-1--setup-area) · [Task 2](#task-2--deteksi-kendaraan) · [Task 3](#task-3--logic-speed-detection) ·
 [Task 4](#task-4--deteksi-nomor-lambung) · [Task 5](#task-5--violation-overspeed) ·
-[R&D Tracking](#rd-tracking) · [Output](#output) ·
+[R&D Tracking](#rd-tracking) · [Log & analisa waktu](#log--analisa-waktu) · [Output](#output) ·
 [Testing](#testing) · [Riwayat perubahan](#riwayat-perubahan)
 
 ---
@@ -39,6 +39,7 @@ hauling_rubythalib/
 │   ├── csv_writer.py        # output  - events.csv
 │   ├── report.py            # output  - tracks_report.csv (--report)
 │   ├── renderer.py          # output  - annotated.mp4 & foto per track (--render / --report)
+│   ├── profiling.py         # log     - waktu setiap tahap (setup + per frame), run.log
 │   ├── export_engine.py     # R&D     - export detector ke TensorRT (main.py export-engine)
 │   ├── benchmark.py         # R&D     - bandingkan tracker + video grid (main.py benchmark-tracker)
 │   ├── pipeline.py          # orkestrasi seluruh task
@@ -296,6 +297,47 @@ Semua varian memakai video, detector, config, dan parameter yang sama. Model nom
 
 ---
 
+## Log & analisa waktu
+
+Setiap run mencatat waktu setiap tahap (fungsi) pipeline, supaya bottleneck bisa dianalisa langsung dari log.
+
+**Tahap setup** (sekali per run): `load_config`, `open_video`, `load_vehicle_model`, `load_plate_model`, `load_ocr_models`, `init_vehicle_type`, `build_reports`, `convert_h264`. Masing-masing dicatat di log sebagai `[mulai]` dan `[selesai] ...: X ms`.
+
+**Tahap per frame:**
+
+| Tahap | Fungsi yang diukur |
+| --- | --- |
+| `read_frame` | Membaca frame dari video (`cv2.VideoCapture.read`) |
+| `detect_track` | Deteksi + tracking (`VehicleTracker.track`), dipecah menjadi `detect` (model) dan `track` (algoritma tracker) |
+| `area_speed` | Cek area, timestamp start/finish, speed, violation (`TrackManager.observe`) |
+| `vehicle_type` | Voting Truck / Light Vehicle |
+| `track_card` | Menyimpan crop terbaik per track (hanya dengan `--report`) |
+| `plate_detect` | Deteksi nomor lambung pada crop kendaraan |
+| `ocr` | Pembacaan teks nomor lambung |
+| `events_csv` | Menulis event ke `events.csv` |
+| `render_video` | Menggambar anotasi + menulis frame video (hanya dengan `--render`) |
+
+**File yang dihasilkan** di folder output:
+
+| File | Isi |
+| --- | --- |
+| `run.log` | Log lengkap: tahap setup, transisi track (`entered_start`, `entered_finish`, `violation`, `event_written`), dan satu baris waktu per frame |
+| `timing_per_frame.csv` | Satu baris per frame: waktu setiap tahap (ms), jumlah deteksi, total |
+| `timing_summary.csv` | Rata-rata, p95, maksimum, dan porsi (%) setiap tahap terhadap total waktu per frame |
+| `run_summary.json` → `timing` | Ringkasan yang sama + `setup_ms` + 5 frame paling lambat |
+
+Contoh baris per frame di `run.log`:
+
+```
+frame=120 t=4.00s det=3 total=262.4ms | read_frame=2.1 detect_track=255.8 area_speed=0.3 vehicle_type=0.2 render_video=3.9 (detect=252.6 track=3.2)
+```
+
+Konsol hanya menampilkan log INFO (setup, transisi track, dan tabel ringkasan di akhir run), sedangkan baris per frame hanya masuk `run.log`. Opsi terkait: `--frame-log-every N` (tulis baris per frame setiap N frame; 0 = mati, `timing_per_frame.csv` tetap lengkap) dan `--no-log-file`.
+
+Angka di sini adalah waktu proses komputer (`time.perf_counter`) dan hanya dipakai untuk analisa kinerja. Speed kendaraan tetap dihitung dari clock video.
+
+---
+
 ## Output
 
 | File | Kapan dibuat | Isi |
@@ -331,7 +373,7 @@ Nilai yang belum tersedia ditulis kosong (bukan `0`, `None`, atau `nan`). Boolea
 ## Testing
 
 ```bash
-python -m pytest -q        # 84 test
+python -m pytest -q        # 89 test
 ```
 
 | File | Cakupan |
@@ -339,6 +381,7 @@ python -m pytest -q        # 84 test
 | `tests/test_units.py` | Config, geometri, state machine, speed, nomor lambung, CSV, laporan per ID |
 | `tests/test_violation.py` | Aturan overspeed (tepat 60, di atas/bawah batas, status tidak valid), penandaan di speed final, satu violation per track |
 | `tests/test_cli.py` | `main.py` sebagai entry point, flag `--render`/`--report`, alias lama, subcommand `auto-area` |
+| `tests/test_profiling.py`, `tests/test_pipeline_logging_smoke.py` | Log waktu per tahap, `run.log`, `timing_per_frame.csv`, run pipeline penuh dengan tracker palsu |
 | `tests/test_tracking_rnd.py` | Config tracker, metadata TensorRT, pengukur waktu, adapter DeepSORT, flag `--tracker`, benchmark dan video grid |
 
 Test tidak membutuhkan model maupun video, sehingga bisa dijalankan di mana saja.
@@ -347,6 +390,7 @@ Test tidak membutuhkan model maupun video, sehingga bisa dijalankan di mana saja
 
 | Versi | Perubahan |
 | --- | --- |
+| 0.5.0 | Log waktu setiap tahap: `run.log`, `timing_per_frame.csv`, `timing_summary.csv`, `timing` di `run_summary.json`; opsi `--frame-log-every`, `--no-log-file` |
 | 0.4.0 | R&D tracking: `--tracker` (bytetrack/botsort/botsort-reid/deepsort), detector TensorRT `.engine`, `main.py export-engine`, `main.py benchmark-tracker` (metrik + video grid), waktu per frame di `run_summary.json`; setup lokal Windows |
 | 0.3.0 | `main.py` sebagai entry point; flag `--render` dan `--report` (default: hanya `events.csv` + `run_summary.json`); subcommand `main.py auto-area`; `requirements.txt` dan `pyproject.toml`; dokumentasi per task ini |
 | 0.2.0 | Task 5 violation overspeed: `violation.py`, kolom `violation_status`/`violation_reason`, `violation_counts` di summary, label OVERSPEED di video |

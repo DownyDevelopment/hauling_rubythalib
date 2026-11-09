@@ -26,6 +26,8 @@ python main.py --video video/km18_sample.mp4 \
 | `--render` | `annotated.mp4` |
 | `--report` | `tracks_report.csv` + foto per track `tracks/track_<id>.jpg` |
 
+Setiap run juga menulis `run.log` (waktu setiap tahap per frame), `timing_per_frame.csv`, dan `timing_summary.csv` untuk analisa bottleneck.
+
 Tracker: `--tracker bytetrack|botsort|botsort-reid|deepsort` (default bytetrack). Detector TensorRT: `.engine` di `--vehicle-model`.
 
 Subcommand:

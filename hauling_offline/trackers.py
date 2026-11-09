@@ -83,7 +83,12 @@ class TimingStats:
     track_ms: List[float] = field(default_factory=list)
     total_ms: List[float] = field(default_factory=list)
 
+    last_detect_ms: float = 0.0
+    last_track_ms: float = 0.0
+
     def add(self, detect_ms: float, total_ms: float) -> None:
+        detect_ms = min(detect_ms, total_ms)
+        self.last_detect_ms, self.last_track_ms = detect_ms, total_ms - detect_ms
         self.frames += 1
         if self.frames <= self.warmup:
             return

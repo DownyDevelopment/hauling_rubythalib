@@ -18,6 +18,7 @@ import cv2
 from .config import KM18Config, load_config
 from .csv_writer import EventCsvWriter
 from .geometry import AreaSet
+from .profiling import StageProfiler, attach_file_log, detach_file_log
 from .renderer import SafeVideoWriter, draw_frame, draw_track_card
 from .report import build_track_rows, count_by, write_tracks_csv
 from .speed import video_timestamp
@@ -69,6 +70,8 @@ class RunOptions:
     device: Optional[str] = None
     track_buffer_sec: float = 2.0
     tracker: str = "bytetrack"                 # bytetrack / botsort / botsort-reid / deepsort
+    frame_log_every: int = 1                   # baris log waktu per frame di run.log (0 = mati)
+    log_file: bool = True                      # simpan log lengkap ke <output_dir>/run.log
     down_direction: str = "South"
     max_frames: Optional[int] = None
     h264: bool = True
@@ -98,6 +101,7 @@ class RunSummary:
     processing_seconds: float = 0.0
     processing_fps: float = 0.0                # frame / detik untuk seluruh pipeline (termasuk render)
     tracker: dict = field(default_factory=dict)   # nama tracker, backend detector, waktu per frame, memori GPU
+    timing: dict = field(default_factory=dict)    # waktu setiap tahap: setup + per frame (lihat profiling.py)
     config: dict = field(default_factory=dict)
     models: dict = field(default_factory=dict)
     outputs: dict = field(default_factory=dict)
@@ -148,22 +152,41 @@ def _to_h264(src: Path) -> Optional[str]:
 
 
 def run(opt: RunOptions) -> RunSummary:
-    t0 = time.perf_counter()  # HANYA untuk durasi proses, tidak dipakai untuk speed
-    summary = RunSummary()
-    _check_inputs(opt)
+    """Jalankan pipeline. Semua log (termasuk waktu setiap tahap per frame) juga disimpan ke run.log."""
     out_dir = Path(opt.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    handler = attach_file_log(out_dir / "run.log") if opt.log_file else None
+    try:
+        return _run(opt, out_dir)
+    except Exception as e:
+        log.error("run gagal: %s", e)
+        raise
+    finally:
+        if handler is not None:
+            detach_file_log(handler)
+
+
+def _run(opt: RunOptions, out_dir: Path) -> RunSummary:
+    t0 = time.perf_counter()  # HANYA untuk durasi proses, tidak dipakai untuk speed
+    summary = RunSummary()
+    prof = StageProfiler(opt.frame_log_every)
+    log.info("run dimulai: video=%s tracker=%s model=%s device=%s max_frames=%s", Path(opt.video).name,
+             opt.tracker, Path(opt.vehicle_model).name, opt.device, opt.max_frames)
+    _check_inputs(opt)
 
     # ---------- Task 1: config & area ----------
+    _t = prof.begin_setup("load_config")
     try:
         cfg: KM18Config = load_config(opt.config, opt.config_section)
     except Exception as e:
         raise PipelineError(f"Config gagal dibaca: {e}") from e
+    prof.end_setup("load_config", _t)
     summary.config = cfg.safe_summary()
     if cfg.auto_generated:
         summary.warnings.append("config area hasil auto-generate (auto_area.py): distance_area_speed belum "
                                 "terkalibrasi terhadap jarak nyata; speed_kmh bersifat indikatif")
 
+    _t = prof.begin_setup("open_video")
     cap = cv2.VideoCapture(str(opt.video))
     if not cap.isOpened():
         raise PipelineError(f"Video tidak dapat dibuka oleh OpenCV: {opt.video}")
@@ -179,6 +202,8 @@ def run(opt: RunOptions) -> RunSummary:
     if (w, h) != cfg.resolution:
         summary.warnings.append(f"polygon diskalakan dari {cfg.resolution[0]}x{cfg.resolution[1]} ke {w}x{h}")
     areas = AreaSet.from_config(cfg, (w, h))
+    prof.end_setup("open_video", _t)
+    log.info("video %dx%d @ %.2f fps, %d frame", w, h, fps, summary.total_frames_reported)
 
     # ---------- Task 2: detector + tracker ----------
     mp = cfg.model_params
@@ -187,6 +212,7 @@ def run(opt: RunOptions) -> RunSummary:
     imgsz = opt.imgsz if opt.imgsz is not None else (int(mp["imgsz"]) if "imgsz" in mp else None)
     max_det = opt.max_det if opt.max_det is not None else int(mp.get("max_det", 100))
     track_buffer = max(1, int(round(opt.track_buffer_sec * fps)))
+    _t = prof.begin_setup("load_vehicle_model")
     try:
         from .detector import VehicleTracker
         tracker = VehicleTracker(str(opt.vehicle_model), conf=conf, iou=iou, imgsz=imgsz, max_det=max_det,
@@ -195,6 +221,7 @@ def run(opt: RunOptions) -> RunSummary:
     except Exception as e:
         cap.release()
         raise PipelineError(f"Model vehicle gagal dimuat ({opt.vehicle_model}): {e}") from e
+    prof.end_setup("load_vehicle_model", _t)
     summary.models["vehicle"] = {"file": Path(opt.vehicle_model).name, "conf": conf, "iou": iou,
                                  "imgsz": tracker.imgsz, "max_det": max_det, "classes": tracker.classes,
                                  "single_cls": bool(tracker.train_args.get("single_cls")),
@@ -206,6 +233,7 @@ def run(opt: RunOptions) -> RunSummary:
     # ---------- Task 4: plate detector (opsional, gagal != stop) ----------
     plate_det = None
     if opt.plate_model is not None:
+        _t = prof.begin_setup("load_plate_model")
         try:
             from .plate import PlateDetector
             plate_det = PlateDetector(str(opt.plate_model), conf=opt.plate_conf, imgsz=opt.plate_imgsz,
@@ -216,6 +244,7 @@ def run(opt: RunOptions) -> RunSummary:
                                        "every_n_frames": opt.plate_every}
         except Exception as e:  # noqa: BLE001
             summary.warnings.append(f"plate model gagal dimuat, plate_detected=false untuk semua event: {e}")
+        prof.end_setup("load_plate_model", _t)
     else:
         summary.warnings.append("--plate-model tidak diberikan; plate_detected=false untuk semua event")
 
@@ -225,6 +254,7 @@ def run(opt: RunOptions) -> RunSummary:
         if plate_det is None:
             summary.warnings.append("OCR dilewati: butuh --plate-model (bbox nomor lambung) yang aktif")
         else:
+            _t = prof.begin_setup("load_ocr_models")
             try:
                 from .ocr import LambungOCR, find_ocr_models
                 ocr = LambungOCR(find_ocr_models(opt.ocr_model_dir), device=opt.device,
@@ -233,6 +263,7 @@ def run(opt: RunOptions) -> RunSummary:
                                          "min_plate_conf": opt.ocr_min_plate_conf, "max_reads_per_track": opt.ocr_max_reads}
             except Exception as e:  # noqa: BLE001
                 summary.warnings.append(f"OCR nomor lambung tidak aktif: {e}"[:300])
+            prof.end_setup("load_ocr_models", _t)
 
     manager = TrackManager(areas, cfg.distance_meter, cfg.speed_limit_kmh, down_direction=opt.down_direction,
                            grace_frames=int(round(opt.plate_grace_sec * fps)) if plate_det is not None else 0,
@@ -246,6 +277,7 @@ def run(opt: RunOptions) -> RunSummary:
         summary.models["plate"]["grace_sec"] = opt.plate_grace_sec
 
     # ---------- Jenis kendaraan: Truck vs Light Vehicle ----------
+    _t = prof.begin_setup("init_vehicle_type")
     from .vehicle_type import VehicleTypeEstimator
     vtype = VehicleTypeEstimator(
         opt.vehicle_type_method, main_polygon=areas.polygons["main"][0], frame_h=h, frame_w=w,
@@ -253,6 +285,7 @@ def run(opt: RunOptions) -> RunSummary:
         coco_model=str(opt.type_model) if opt.type_model else None, coco_every=opt.type_every,
         size_threshold=opt.type_size_threshold, device=opt.device)
     summary.warnings.extend(vtype.warnings)
+    prof.end_setup("init_vehicle_type", _t)
     summary.models["vehicle_type"] = {"method": vtype.method, "size_threshold": opt.type_size_threshold,
                                       "coco_model": Path(vtype.coco.file).name if vtype.coco else None}
     cards = {}   # track_id -> (area bbox, crop) foto terbesar selama di main area
@@ -287,7 +320,9 @@ def run(opt: RunOptions) -> RunSummary:
     ocr_err_logged = False
     frame_index = -1
     try:
+        log.info("[mulai] loop frame")
         while True:
+            t_frame = prof.tic()
             ok, frame = cap.read()
             if not ok:
                 break
@@ -296,17 +331,28 @@ def run(opt: RunOptions) -> RunSummary:
                 frame_index -= 1
                 break
             ts = video_timestamp(frame_index, fps)   # clock video, BUKAN time.time()
+            prof.start_frame(frame_index, ts, t0=t_frame)
+            prof.toc("read_frame", t_frame)
+            events_before = summary.csv_events
 
+            _t = prof.tic()
             try:
                 dets = tracker.track(frame)
             except Exception as e:  # noqa: BLE001 - frame bermasalah tidak menghentikan run
                 summary.errors.append(f"frame {frame_index}: tracker error {e}"[:300])
+                log.error("frame %d: tracker error %s", frame_index, e)
                 dets = []
+            prof.toc("detect_track", _t)
+            prof.add("detect", tracker.timing.last_detect_ms)
+            prof.add("track", tracker.timing.last_track_ms)
             summary.total_detections += len(dets)
 
+            _t = prof.tic()
             need_plate = manager.observe(dets, frame_index, ts)
+            prof.toc("area_speed", _t)
             frame_plates = {}  # kandidat plat di frame ini (untuk digambar)
 
+            _t = prof.tic()
             in_main = [d for d in dets if d.track_id is not None and manager.in_main(d)]
             try:
                 for tid, vs in vtype.vote_frame(frame, in_main, frame_index).items():
@@ -316,6 +362,8 @@ def run(opt: RunOptions) -> RunSummary:
                 if not type_err_logged:
                     summary.warnings.append(f"vehicle type error (frame {frame_index}): {e}"[:300])
                     type_err_logged = True
+            prof.toc("vehicle_type", _t)
+            _t = prof.tic()
             if opt.save_report and opt.save_track_cards:
                 for d in in_main:
                     x1, y1, x2, y2 = (int(round(v)) for v in d.bbox_xyxy)
@@ -323,7 +371,9 @@ def run(opt: RunOptions) -> RunSummary:
                     st = manager.tracks.get(d.track_id)
                     if a > cards.get(d.track_id, (0, None))[0] and st is not None and not st.event_written:
                         cards[d.track_id] = (a, frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)].copy(), ts)
+            prof.toc("track_card", _t)
 
+            _t = prof.tic()
             if plate_det is not None and need_plate and frame_index % max(1, opt.plate_every) == 0:
                 try:
                     cands = plate_det.detect_on_crops(frame, [d.bbox_xyxy for d in need_plate], ts, frame_index)
@@ -337,7 +387,9 @@ def run(opt: RunOptions) -> RunSummary:
                     if not plate_err_logged:
                         summary.warnings.append(f"plate detector error (frame {frame_index}): {e}"[:300])
                         plate_err_logged = True
+            prof.toc("plate_detect", _t)
 
+            _t = prof.tic()
             if ocr is not None:
                 for tid, c in frame_plates.items():
                     st = manager.tracks.get(tid)
@@ -355,9 +407,13 @@ def run(opt: RunOptions) -> RunSummary:
                         if not ocr_err_logged:
                             summary.warnings.append(f"OCR error (frame {frame_index}): {e}"[:300])
                             ocr_err_logged = True
+            prof.toc("ocr", _t)
 
+            _t = prof.tic()
             write_events(manager.collect_events(frame_index))
+            prof.toc("events_csv", _t)
 
+            _t = prof.tic()
             if vw is not None and vw.ok:
                 speeds = {d.track_id: manager.live_speed(d.track_id) for d in dets if d.track_id is not None}
                 texts = {d.track_id: manager.tracks[d.track_id].lambung_text(opt.lambung_format) for d in dets
@@ -366,10 +422,14 @@ def run(opt: RunOptions) -> RunSummary:
                          if d.track_id is not None and d.track_id in manager.tracks}
                 vw.write(draw_frame(frame, areas, dets, speeds, frame_plates, cfg.speed_limit_kmh, ts,
                                     frame_index, {k: v for k, v in texts.items() if v}, types))
+            prof.toc("render_video", _t)
+            new_events = summary.csv_events - events_before
+            prof.end_frame(len(dets), note=f"event_baru={new_events}" if new_events else "")
 
             if frame_index % 500 == 0:
                 log.info("frame %d (t=%.1fs) events=%d", frame_index, ts, summary.csv_events)
         write_events(manager.collect_events(flush=True))   # event yang masih dalam masa grace saat video habis
+        log.info("[selesai] loop frame: %d frame", frame_index + 1)
     finally:
         cap.release()
         writer.close()
@@ -387,6 +447,7 @@ def run(opt: RunOptions) -> RunSummary:
     summary.outputs["events_csv"] = str(csv_path)
 
     # ---------- Laporan per ID kendaraan ----------
+    _t = prof.begin_setup("build_reports")
     rows = build_track_rows(manager, event_ids, summary.total_frames_read, fps, plate_enabled=plate_det is not None)
     if opt.save_report:
         tracks_path = out_dir / "tracks_report.csv"
@@ -409,12 +470,15 @@ def run(opt: RunOptions) -> RunSummary:
             except Exception as e:  # noqa: BLE001
                 summary.warnings.append(f"foto track {tid} gagal disimpan: {e}"[:200])
         summary.outputs["track_cards"] = str(card_dir)
+    prof.end_setup("build_reports", _t)
     if vw is not None:
         if vw.error:
             summary.warnings.append(vw.error)
         elif vw.frames > 0:
             if opt.h264:
+                _t = prof.begin_setup("convert_h264")
                 warn = _to_h264(video_path)
+                prof.end_setup("convert_h264", _t)
                 if warn:
                     summary.warnings.append(warn)
             summary.outputs["annotated_video"] = str(video_path)
@@ -424,6 +488,15 @@ def run(opt: RunOptions) -> RunSummary:
         summary.processing_fps = round(summary.total_frames_read / summary.processing_seconds, 2)
     summary.tracker.update(tracker.timing.summary())
     summary.tracker["gpu_peak_mem_mb"] = _gpu_peak_mb()
+    timing_files = prof.write(out_dir)
+    summary.outputs.update(timing_files)
+    if opt.log_file:
+        summary.outputs["run_log"] = str(out_dir / "run.log")
+    summary.timing = {"setup_ms": prof.setup_ms, "per_frame": prof.stage_summary(),
+                      "slowest_frames": prof.slowest_frames()}
+    prof.log_summary()
+    log.info("run selesai: %.1f s, %d frame, %d event", summary.processing_seconds, summary.total_frames_read,
+             summary.csv_events)
     summary_path = out_dir / "run_summary.json"
     summary.outputs["run_summary"] = str(summary_path)
     summary_path.write_text(json.dumps(asdict(summary), indent=2, ensure_ascii=False), encoding="utf-8")
