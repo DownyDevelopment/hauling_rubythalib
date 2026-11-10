@@ -269,7 +269,7 @@ python main.py benchmark-tracker --video video/km18_sample.mp4 \
   --true-vehicles 12 --max-frames 1800 --device 0 --output-dir outputs/benchmark_01
 ```
 
-Semua varian memakai video, detector, config, dan parameter yang sama. Model nomor lambung tidak dijalankan supaya waktu yang terukur murni deteksi dan tracking. Satu varian yang gagal (misalnya TensorRT belum terpasang) hanya ditandai `gagal`; varian lain tetap berjalan.
+Semua varian memakai video, detector, config, dan parameter yang sama. Secara default model nomor lambung dan OCR tidak dijalankan, supaya waktu yang terukur murni deteksi dan tracking. Untuk mengukur pipeline lengkap, tambahkan `--plate-model model/detection_hauling_angka_huruf_V1.pt --plate-region 0.4,1,0.25,1 --ocr-model-dir model`; waktunya tercatat terpisah di tahap `plate_detect` dan `ocr`, dan `benchmark_results.csv` mendapat kolom `plate_detected` serta `lambung_text_read`. Satu varian yang gagal (misalnya TensorRT belum terpasang) hanya ditandai `gagal`; varian lain tetap berjalan.
 
 **Output benchmark.**
 
@@ -373,7 +373,7 @@ Nilai yang belum tersedia ditulis kosong (bukan `0`, `None`, atau `nan`). Boolea
 ## Testing
 
 ```bash
-python -m pytest -q        # 89 test
+python -m pytest -q        # 90 test
 ```
 
 | File | Cakupan |
@@ -390,6 +390,7 @@ Test tidak membutuhkan model maupun video, sehingga bisa dijalankan di mana saja
 
 | Versi | Perubahan |
 | --- | --- |
+| 0.6.0 | `benchmark-tracker` bisa menjalankan nomor lambung + OCR (`--plate-model`, `--plate-region`, `--ocr-model-dir`); kolom `plate_detected` dan `lambung_text_read` di hasil benchmark |
 | 0.5.0 | Log waktu setiap tahap: `run.log`, `timing_per_frame.csv`, `timing_summary.csv`, `timing` di `run_summary.json`; opsi `--frame-log-every`, `--no-log-file` |
 | 0.4.0 | R&D tracking: `--tracker` (bytetrack/botsort/botsort-reid/deepsort), detector TensorRT `.engine`, `main.py export-engine`, `main.py benchmark-tracker` (metrik + video grid), waktu per frame di `run_summary.json`; setup lokal Windows |
 | 0.3.0 | `main.py` sebagai entry point; flag `--render` dan `--report` (default: hanya `events.csv` + `run_summary.json`); subcommand `main.py auto-area`; `requirements.txt` dan `pyproject.toml`; dokumentasi per task ini |

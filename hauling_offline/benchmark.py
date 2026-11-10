@@ -1,8 +1,9 @@
 """R&D tracking: jalankan pipeline yang sama dengan beberapa tracker / backend detector, lalu bandingkan.
 
 Semua varian memakai video, detector, config area, dan parameter yang SAMA; yang diganti hanya tracker
-(atau backend detector .pt vs TensorRT .engine). Model nomor lambung tidak dijalankan agar waktu yang terukur
-murni deteksi + tracking.
+(atau backend detector .pt vs TensorRT .engine). Secara default model nomor lambung dan OCR tidak dijalankan
+agar waktu yang terukur murni deteksi + tracking; aktifkan dengan --plate-model dan --ocr-model-dir untuk
+mengukur pipeline lengkap (waktunya tercatat terpisah di tahap plate_detect dan ocr).
 
     python main.py benchmark-tracker --video video/km18_sample.mp4 \\
         --vehicle-model model/Hauling_Vehicle_yolov8m_SingleCls_V11.pt --config config/km18.conf \\
@@ -46,7 +47,7 @@ RESULT_COLUMNS = [
     "processing_fps", "gpu_peak_mem_mb",
     "unique_tracks", "relevant_tracks", "true_vehicles", "fragmentation_ratio",
     "csv_events", "speed_valid", "not_crossed_start", "gagal_finish", "deteksi_singkat",
-    "mean_frames_in_main", "overspeed", "error",
+    "mean_frames_in_main", "overspeed", "plate_detected", "lambung_text_read", "error",
 ]
 
 
@@ -104,6 +105,7 @@ def result_row(variant: Variant, summary, true_vehicles: Optional[int]) -> dict:
                                  "fps_detect_track", "gpu_peak_mem_mb")},
         "processing_fps": summary.processing_fps, "unique_tracks": summary.unique_tracks,
         "csv_events": summary.csv_events, "speed_valid": summary.speed_valid, "overspeed": summary.overspeed,
+        "plate_detected": summary.plate_detected, "lambung_text_read": summary.lambung_text_read,
         "error": "",
     }
     row.update(track_metrics(rows, summary.speed_status_counts, true_vehicles))
@@ -133,7 +135,8 @@ def results_markdown(results: Sequence[dict]) -> str:
     cols = [("label", "Varian"), ("total_ms_mean", "ms/frame"), ("fps_detect_track", "FPS"),
             ("detect_ms_mean", "deteksi ms"), ("track_ms_mean", "tracking ms"), ("relevant_tracks", "ID di main"),
             ("fragmentation_ratio", "rasio fragmentasi"), ("csv_events", "event"), ("speed_valid", "speed valid"),
-            ("not_crossed_start", "muncul stlh start"), ("gagal_finish", "gagal finish")]
+            ("not_crossed_start", "muncul stlh start"), ("gagal_finish", "gagal finish"),
+            ("lambung_text_read", "lambung terbaca")]
     lines = ["| " + " | ".join(h for _, h in cols) + " |", "|" + "---|" * len(cols)]
     for r in results:
         if r.get("status") != "ok":
@@ -235,6 +238,11 @@ def main(argv=None) -> int:
     p.add_argument("--imgsz", type=int, default=None)
     p.add_argument("--vehicle-classes", default=None)
     p.add_argument("--main-mode", default="centroid", choices=["centroid", "bbox"])
+    p.add_argument("--plate-model", type=Path, default=None,
+                   help="model nomor lambung; bila diisi, deteksi nomor lambung ikut diukur di semua varian")
+    p.add_argument("--plate-region", default="0,1,0,1", help="area kabin pada crop kendaraan: y0,y1,x0,x1")
+    p.add_argument("--ocr-model-dir", type=Path, default=None, help="folder model OCR nomor lambung (butuh --plate-model)")
+    p.add_argument("--plate-grace-sec", type=float, default=1.0)
     p.add_argument("--no-video", dest="video_out", action="store_false", help="jangan render video (lebih cepat)")
     p.add_argument("--panel-width", type=int, default=960, help="lebar tiap panel di video grid")
     a = p.parse_args(argv)
@@ -246,6 +254,9 @@ def main(argv=None) -> int:
         if not path.is_file():
             print(f"[ERROR] {label} tidak ditemukan: {path}", file=sys.stderr)
             return 2
+    if a.plate_model is not None and not a.plate_model.is_file():
+        print(f"[ERROR] plate model tidak ditemukan: {a.plate_model}", file=sys.stderr)
+        return 2
     if a.engine is not None and not a.engine.is_file():
         print(f"[ERROR] engine tidak ditemukan: {a.engine} (buat dengan `main.py export-engine`)", file=sys.stderr)
         return 2
@@ -261,6 +272,8 @@ def main(argv=None) -> int:
             conf=a.conf, imgsz=a.imgsz, device=a.device, tracker=v.tracker, track_buffer_sec=a.track_buffer_sec,
             vehicle_classes=[int(x) for x in a.vehicle_classes.split(",")] if a.vehicle_classes else None,
             main_mode=a.main_mode, max_frames=a.max_frames, h264=False,
+            plate_model=a.plate_model, plate_region=tuple(float(v) for v in a.plate_region.split(",")),
+            ocr_model_dir=a.ocr_model_dir, plate_grace_sec=a.plate_grace_sec,
         )
         try:
             s = run(opt)

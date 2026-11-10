@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hauling-offline"
-version = "0.5.0"
+version = "0.6.0"
 description = "Pipeline inference hauling offline KM-18: deteksi kendaraan, speed, violation overspeed, nomor lambung"
 readme = "README.md"
 requires-python = ">=3.9"

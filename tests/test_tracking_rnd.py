@@ -187,3 +187,27 @@ def test_failed_variant_does_not_stop_benchmark(tmp_path, monkeypatch):
     assert rc == 1
     row = next(csv.DictReader((tmp_path / "b" / "benchmark_results.csv").open(encoding="utf-8")))
     assert row["status"] == "gagal" and "deep-sort-realtime" in row["error"]
+
+
+def test_benchmark_passes_plate_and_ocr(tmp_path, monkeypatch):
+    import hauling_offline.pipeline as P
+    for name in ("v.mp4", "m.pt", "c.conf", "plate.pt"):
+        (tmp_path / name).write_bytes(b"x")
+    seen = []
+
+    def fake_run(opt):
+        seen.append(opt)
+        s = RunSummary(csv_events=7, plate_detected=6, lambung_text_read=6)
+        s.tracker = {"detector_backend": "pt"}
+        return s
+
+    monkeypatch.setattr(P, "run", fake_run)
+    rc = B.main(["--video", str(tmp_path / "v.mp4"), "--vehicle-model", str(tmp_path / "m.pt"),
+                 "--config", str(tmp_path / "c.conf"), "--output-dir", str(tmp_path / "b"), "--trackers", "bytetrack",
+                 "--no-video", "--plate-model", str(tmp_path / "plate.pt"), "--plate-region", "0.4,1,0.25,1",
+                 "--ocr-model-dir", str(tmp_path)])
+    assert rc == 0
+    assert seen[0].plate_model == tmp_path / "plate.pt" and seen[0].ocr_model_dir == tmp_path
+    assert seen[0].plate_region == (0.4, 1.0, 0.25, 1.0)
+    row = next(csv.DictReader((tmp_path / "b" / "benchmark_results.csv").open(encoding="utf-8")))
+    assert row["lambung_text_read"] == "6" and row["plate_detected"] == "6"
